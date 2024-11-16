@@ -5,8 +5,9 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::Files;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomDiagnostic {
     pub message: String,
     pub secondaries: Vec<CustomLabel>,
@@ -20,7 +21,7 @@ pub struct CustomDiagnostic {
     pub call_stack: Vec<Location>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticKind {
     Error,
     Bug,
@@ -173,7 +174,7 @@ impl std::fmt::Display for CustomDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomLabel {
     pub message: String,
     pub span: Span,

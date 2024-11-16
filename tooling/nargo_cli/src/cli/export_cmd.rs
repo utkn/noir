@@ -89,12 +89,11 @@ fn compile_exported_functions(
     let exported_programs = try_vecmap(
         exported_functions,
         |(function_name, function_id)| -> Result<(String, CompiledProgram), CompileError> {
-            // TODO: We should to refactor how to deal with compilation errors to avoid this.
             let program = compile_no_check(&mut context, compile_options, function_id, None, false)
                 .map_err(|error| vec![FileDiagnostic::from(error)]);
 
             let program = report_errors(
-                program.map(|program| (program, Vec::new())),
+                program,
                 file_manager,
                 compile_options.deny_warnings,
                 compile_options.silence_warnings,

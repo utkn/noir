@@ -13,7 +13,6 @@ use noirc_errors::{CustomDiagnostic as Diagnostic, FileDiagnostic};
 use thiserror::Error;
 
 use crate::ssa::ir::{dfg::CallStack, types::NumericType};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum RuntimeError {
@@ -63,7 +62,7 @@ pub enum RuntimeError {
     UnknownReference { call_stack: CallStack },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum SsaReport {
     Warning(InternalWarning),
     Bug(InternalBug),
@@ -107,7 +106,7 @@ impl From<SsaReport> for FileDiagnostic {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Error, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum InternalWarning {
     #[error("Return variable contains a constant value")]
     ReturnConstant { call_stack: CallStack },
@@ -115,7 +114,7 @@ pub enum InternalWarning {
     VerifyProof { call_stack: CallStack },
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Error, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum InternalBug {
     #[error("Input to brillig function is in a separate subgraph to output")]
     IndependentSubgraph { call_stack: CallStack },

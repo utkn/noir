@@ -7,7 +7,7 @@ use noirc_artifacts::{contract::ContractArtifact, program::ProgramArtifact};
 use noirc_driver::{
     add_dep, file_manager_with_stdlib, prepare_crate, prepare_dependency, CompileOptions,
 };
-use noirc_evaluator::errors::SsaReport;
+use noirc_errors::FileDiagnostic;
 use noirc_frontend::{
     graph::{CrateId, CrateName},
     hir::Context,
@@ -81,7 +81,7 @@ impl JsCompileProgramResult {
     const PROGRAM_PROP: &'static str = "program";
     const WARNINGS_PROP: &'static str = "warnings";
 
-    pub fn new(program: ProgramArtifact, warnings: Vec<SsaReport>) -> JsCompileProgramResult {
+    pub fn new(program: ProgramArtifact, warnings: Vec<FileDiagnostic>) -> JsCompileProgramResult {
         let obj = JsCompileProgramResult::constructor();
 
         js_sys::Reflect::set(
@@ -105,7 +105,10 @@ impl JsCompileContractResult {
     const CONTRACT_PROP: &'static str = "contract";
     const WARNINGS_PROP: &'static str = "warnings";
 
-    pub fn new(contract: ContractArtifact, warnings: Vec<SsaReport>) -> JsCompileContractResult {
+    pub fn new(
+        contract: ContractArtifact,
+        warnings: Vec<FileDiagnostic>,
+    ) -> JsCompileContractResult {
         let obj = JsCompileContractResult::constructor();
 
         js_sys::Reflect::set(
@@ -168,16 +171,16 @@ pub fn compile_program(
     let compile_options =
         CompileOptions { expression_width: Some(expression_width), ..CompileOptions::default() };
 
-    let compiled_program =
-        noirc_driver::compile_main(&mut context, crate_id, &compile_options, None)
-            .map_err(|errs| {
+    let (compiled_program, warnings) =
+        noirc_driver::compile_main(&mut context, crate_id, &compile_options, None).map_err(
+            |errs| {
                 CompileError::with_file_diagnostics(
                     "Failed to compile program",
                     errs,
                     &context.file_manager,
                 )
-            })?
-            .0;
+            },
+        )?;
 
     let optimized_program = nargo::ops::transform_program(compiled_program, expression_width);
     nargo::ops::check_program(&optimized_program).map_err(|errs| {
@@ -187,7 +190,6 @@ pub fn compile_program(
             &context.file_manager,
         )
     })?;
-    let warnings = optimized_program.warnings.clone();
 
     Ok(JsCompileProgramResult::new(optimized_program.into(), warnings))
 }
@@ -205,19 +207,18 @@ pub fn compile_contract(
     let compile_options =
         CompileOptions { expression_width: Some(expression_width), ..CompileOptions::default() };
 
-    let compiled_contract =
-        noirc_driver::compile_contract(&mut context, crate_id, &compile_options)
-            .map_err(|errs| {
+    let (compiled_contract, warnings) =
+        noirc_driver::compile_contract(&mut context, crate_id, &compile_options).map_err(
+            |errs| {
                 CompileError::with_file_diagnostics(
                     "Failed to compile contract",
                     errs,
                     &context.file_manager,
                 )
-            })?
-            .0;
+            },
+        )?;
 
     let optimized_contract = nargo::ops::transform_contract(compiled_contract, expression_width);
-    let warnings = optimized_contract.warnings.clone();
 
     Ok(JsCompileContractResult::new(optimized_contract.into(), warnings))
 }

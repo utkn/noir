@@ -338,11 +338,10 @@ pub fn compile_main(
         vec![err]
     })?;
 
-    let compiled_program =
+    let (compiled_program, compilation_warnings) =
         compile_no_check(context, options, main, cached_program, options.force_compile)
             .map_err(FileDiagnostic::from)?;
 
-    let compilation_warnings = vecmap(compiled_program.warnings.clone(), FileDiagnostic::from);
     if options.deny_warnings && !compilation_warnings.is_empty() {
         return Err(compilation_warnings);
     }
@@ -393,7 +392,8 @@ pub fn compile_contract(
         Err(errors)
     } else {
         assert_eq!(compiled_contracts.len(), 1);
-        let compiled_contract = compiled_contracts.remove(0);
+        let (compiled_contract, warnings) = compiled_contracts.remove(0);
+        errors.extend(warnings);
 
         if options.print_acir {
             for contract_function in &compiled_contract.functions {
@@ -404,6 +404,7 @@ pub fn compile_contract(
                 println!("{}", contract_function.bytecode);
             }
         }
+
         // errors here is either empty or contains only warnings
         Ok((compiled_contract, errors))
     }
@@ -423,7 +424,7 @@ fn compile_contract_inner(
     context: &mut Context,
     contract: Contract,
     options: &CompileOptions,
-) -> Result<CompiledContract, ErrorsAndWarnings> {
+) -> CompilationResult<CompiledContract> {
     let mut functions = Vec::new();
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -441,14 +442,15 @@ fn compile_contract_inner(
             continue;
         }
 
-        let function = match compile_no_check(context, options, function_id, None, true) {
-            Ok(function) => function,
-            Err(new_error) => {
-                errors.push(FileDiagnostic::from(new_error));
-                continue;
-            }
-        };
-        warnings.extend(function.warnings);
+        let (function, more_warnings) =
+            match compile_no_check(context, options, function_id, None, true) {
+                Ok(function) => function,
+                Err(new_error) => {
+                    errors.push(FileDiagnostic::from(new_error));
+                    continue;
+                }
+            };
+        warnings.extend(more_warnings);
         let modifiers = context.def_interner.function_modifiers(&function_id);
 
         let custom_attributes = modifiers
@@ -520,14 +522,16 @@ fn compile_contract_inner(
             })
             .collect();
 
-        Ok(CompiledContract {
-            name: contract.name,
-            functions,
-            outputs: CompiledContractOutputs { structs: out_structs, globals: out_globals },
-            file_map,
-            noir_version: NOIR_ARTIFACT_VERSION_STRING.to_string(),
+        Ok((
+            CompiledContract {
+                name: contract.name,
+                functions,
+                outputs: CompiledContractOutputs { structs: out_structs, globals: out_globals },
+                file_map,
+                noir_version: NOIR_ARTIFACT_VERSION_STRING.to_string(),
+            },
             warnings,
-        })
+        ))
     } else {
         Err(errors)
     }
@@ -549,7 +553,7 @@ pub fn compile_no_check(
     main_function: FuncId,
     cached_program: Option<CompiledProgram>,
     force_compile: bool,
-) -> Result<CompiledProgram, CompileError> {
+) -> Result<(CompiledProgram, Warnings), CompileError> {
     let program = if options.instrument_debug {
         monomorphize_debug(main_function, &mut context.def_interner, &context.debug_instrumenter)?
     } else {
@@ -573,7 +577,7 @@ pub fn compile_no_check(
 
     if !force_compile && hashes_match {
         info!("Program matches existing artifact, returning early");
-        return Ok(cached_program.expect("cache must exist for hashes to match"));
+        return Ok((cached_program.expect("cache must exist for hashes to match"), Vec::new()));
     }
     let return_visibility = program.return_visibility;
     let ssa_evaluator_options = noirc_evaluator::ssa::SsaEvaluatorOptions {
@@ -597,15 +601,17 @@ pub fn compile_no_check(
     let abi = abi_gen::gen_abi(context, &main_function, return_visibility, error_types);
     let file_map = filter_relevant_files(&debug, &context.file_manager);
 
-    Ok(CompiledProgram {
-        hash,
-        program,
-        debug,
-        abi,
-        file_map,
-        noir_version: NOIR_ARTIFACT_VERSION_STRING.to_string(),
-        warnings,
-        names,
-        brillig_names,
-    })
+    Ok((
+        CompiledProgram {
+            hash,
+            program,
+            debug,
+            abi,
+            file_map,
+            noir_version: NOIR_ARTIFACT_VERSION_STRING.to_string(),
+            names,
+            brillig_names,
+        },
+        vecmap(warnings, |warning| warning.into()),
+    ))
 }

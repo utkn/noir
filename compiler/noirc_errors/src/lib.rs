@@ -8,8 +8,9 @@ mod position;
 pub mod reporter;
 pub use position::{Location, Position, Span, Spanned};
 pub use reporter::{CustomDiagnostic, DiagnosticKind};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiagnostic {
     pub file_id: fm::FileId,
     pub diagnostic: CustomDiagnostic,

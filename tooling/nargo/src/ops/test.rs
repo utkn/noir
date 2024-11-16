@@ -44,7 +44,7 @@ pub fn run_test<B: BlackBoxFunctionSolver<FieldElement>>(
         .is_empty();
 
     match compile_no_check(context, config, test_function.get_id(), None, false) {
-        Ok(compiled_program) => {
+        Ok((compiled_program, _)) => {
             if test_function_has_no_arguments {
                 // Run the backend to ensure the PWG evaluates functions like std::hash::pedersen,
                 // otherwise constraints involving these expressions will not error.

@@ -65,7 +65,6 @@ impl From<ProgramArtifact> for CompiledProgram {
             program: program.bytecode,
             debug: program.debug_symbols.debug_infos,
             file_map: program.file_map,
-            warnings: vec![],
             names: program.names,
             brillig_names: program.brillig_names,
         }
