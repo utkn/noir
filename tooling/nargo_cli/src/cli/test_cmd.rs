@@ -12,10 +12,11 @@ use acvm::{BlackBoxFunctionSolver, FieldElement};
 use bn254_blackbox_solver::Bn254BlackBoxSolver;
 use clap::Args;
 use fm::FileManager;
-use formatters::{Formatter, PrettyFormatter, TerseFormatter};
+use formatters::{Formatter, JsonFormatter, PrettyFormatter, TerseFormatter};
 use nargo::{
-    insert_all_files_for_workspace_into_file_manager, ops::TestStatus, package::Package, parse_all,
-    prepare_package, workspace::Workspace, PrintOutput,
+    foreign_calls::DefaultForeignCallBuilder, insert_all_files_for_workspace_into_file_manager,
+    ops::TestStatus, package::Package, parse_all, prepare_package, workspace::Workspace,
+    PrintOutput,
 };
 use nargo_toml::{get_package_manifest, resolve_workspace_from_toml};
 use noirc_driver::{check_crate, CompileOptions, NOIR_ARTIFACT_VERSION_STRING};
@@ -71,6 +72,8 @@ enum Format {
     Pretty,
     /// Display one character per test
     Terse,
+    /// Output a JSON Lines document
+    Json,
 }
 
 impl Format {
@@ -78,6 +81,7 @@ impl Format {
         match self {
             Format::Pretty => Box::new(PrettyFormatter),
             Format::Terse => Box::new(TerseFormatter),
+            Format::Json => Box::new(JsonFormatter),
         }
     }
 }
@@ -87,6 +91,7 @@ impl Display for Format {
         match self {
             Format::Pretty => write!(f, "pretty"),
             Format::Terse => write!(f, "terse"),
+            Format::Json => write!(f, "json"),
         }
     }
 }
@@ -211,6 +216,12 @@ impl<'a> TestRunner<'a> {
     ) -> bool {
         let mut all_passed = true;
 
+        for (package_name, total_test_count) in test_count_per_package {
+            self.formatter
+                .package_start_async(package_name, *total_test_count)
+                .expect("Could not display package start");
+        }
+
         let (sender, receiver) = mpsc::channel();
         let iter = &Mutex::new(tests.into_iter());
         thread::scope(|scope| {
@@ -227,6 +238,10 @@ impl<'a> TestRunner<'a> {
                         let Some(test) = iter.lock().unwrap().next() else {
                             break;
                         };
+
+                        self.formatter
+                            .test_start_async(&test.name, &test.package_name)
+                            .expect("Could not display test start");
 
                         let time_before_test = std::time::Instant::now();
                         let (status, output) = match catch_unwind(test.runner) {
@@ -255,6 +270,16 @@ impl<'a> TestRunner<'a> {
                             time_to_run,
                         };
 
+                        self.formatter
+                            .test_end_async(
+                                &test_result,
+                                self.file_manager,
+                                self.args.show_output,
+                                self.args.compile_options.deny_warnings,
+                                self.args.compile_options.silence_warnings,
+                            )
+                            .expect("Could not display test start");
+
                         if thread_sender.send(test_result).is_err() {
                             break;
                         }
@@ -275,7 +300,7 @@ impl<'a> TestRunner<'a> {
                 let total_test_count = *total_test_count;
 
                 self.formatter
-                    .package_start(package_name, total_test_count)
+                    .package_start_sync(package_name, total_test_count)
                     .expect("Could not display package start");
 
                 // Check if we have buffered test results for this package
@@ -470,10 +495,16 @@ impl<'a> TestRunner<'a> {
             &mut context,
             test_function,
             PrintOutput::String(&mut output_string),
-            foreign_call_resolver_url,
-            root_path,
-            Some(package_name),
             &self.args.compile_options,
+            |output, base| {
+                DefaultForeignCallBuilder {
+                    output,
+                    resolver_url: foreign_call_resolver_url.map(|s| s.to_string()),
+                    root_path: root_path.clone(),
+                    package_name: Some(package_name.clone()),
+                }
+                .build_with_base(base)
+            },
         );
         (test_status, output_string)
     }
@@ -485,7 +516,7 @@ impl<'a> TestRunner<'a> {
         current_test_count: usize,
         total_test_count: usize,
     ) -> std::io::Result<()> {
-        self.formatter.test_end(
+        self.formatter.test_end_sync(
             test_result,
             current_test_count,
             total_test_count,

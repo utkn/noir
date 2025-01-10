@@ -18,7 +18,8 @@ use crate::ssa::ir::{
 use super::{
     ir::{
         basic_block::BasicBlock,
-        dfg::{CallStack, InsertInstructionResult},
+        call_stack::{CallStack, CallStackId},
+        dfg::InsertInstructionResult,
         function::RuntimeType,
         instruction::{ConstrainError, InstructionId, Intrinsic},
         types::NumericType,
@@ -34,11 +35,15 @@ use super::{
 /// Contrary to the name, this struct has the capacity to build as many
 /// functions as needed, although it is limited to one function at a time.
 pub(crate) struct FunctionBuilder {
-    pub(super) current_function: Function,
+    pub(crate) current_function: Function,
     current_block: BasicBlockId,
     finished_functions: Vec<Function>,
-    call_stack: CallStack,
+    call_stack: CallStackId,
     error_types: BTreeMap<ErrorSelector, HirType>,
+
+    /// Whether instructions are simplified as soon as they are inserted into this builder.
+    /// This is true by default unless changed to false after constructing a builder.
+    pub(crate) simplify: bool,
 }
 
 impl FunctionBuilder {
@@ -53,8 +58,9 @@ impl FunctionBuilder {
             current_block: new_function.entry_block(),
             current_function: new_function,
             finished_functions: Vec::new(),
-            call_stack: CallStack::new(),
+            call_stack: CallStackId::root(),
             error_types: BTreeMap::default(),
+            simplify: true,
         }
     }
 
@@ -78,11 +84,14 @@ impl FunctionBuilder {
         function_id: FunctionId,
         runtime_type: RuntimeType,
     ) {
+        let call_stack = self.current_function.dfg.get_call_stack(self.call_stack);
         let mut new_function = Function::new(name, function_id);
         new_function.set_runtime(runtime_type);
         self.current_block = new_function.entry_block();
-
         let old_function = std::mem::replace(&mut self.current_function, new_function);
+        // Copy the call stack to the new function
+        self.call_stack =
+            self.current_function.dfg.call_stack_data.get_or_insert_locations(call_stack);
         self.finished_functions.push(old_function);
     }
 
@@ -129,6 +138,7 @@ impl FunctionBuilder {
     }
 
     /// Insert a numeric constant into the current function of type Field
+    #[cfg(test)]
     pub(crate) fn field_constant(&mut self, value: impl Into<FieldElement>) -> ValueId {
         self.numeric_constant(value.into(), NumericType::NativeField)
     }
@@ -167,12 +177,21 @@ impl FunctionBuilder {
         ctrl_typevars: Option<Vec<Type>>,
     ) -> InsertInstructionResult {
         let block = self.current_block();
-        self.current_function.dfg.insert_instruction_and_results(
-            instruction,
-            block,
-            ctrl_typevars,
-            self.call_stack.clone(),
-        )
+        if self.simplify {
+            self.current_function.dfg.insert_instruction_and_results(
+                instruction,
+                block,
+                ctrl_typevars,
+                self.call_stack,
+            )
+        } else {
+            self.current_function.dfg.insert_instruction_and_results_without_simplification(
+                instruction,
+                block,
+                ctrl_typevars,
+                self.call_stack,
+            )
+        }
     }
 
     /// Switch to inserting instructions in the given block.
@@ -196,17 +215,17 @@ impl FunctionBuilder {
     }
 
     pub(crate) fn set_location(&mut self, location: Location) -> &mut FunctionBuilder {
-        self.call_stack = CallStack::unit(location);
+        self.call_stack = self.current_function.dfg.call_stack_data.add_location_to_root(location);
         self
     }
 
-    pub(crate) fn set_call_stack(&mut self, call_stack: CallStack) -> &mut FunctionBuilder {
+    pub(crate) fn set_call_stack(&mut self, call_stack: CallStackId) -> &mut FunctionBuilder {
         self.call_stack = call_stack;
         self
     }
 
     pub(crate) fn get_call_stack(&self) -> CallStack {
-        self.call_stack.clone()
+        self.current_function.dfg.get_call_stack(self.call_stack)
     }
 
     /// Insert a Load instruction at the end of the current block, loading from the given address
@@ -324,6 +343,7 @@ impl FunctionBuilder {
             .first()
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_mutable_array_set(
         &mut self,
         array: ValueId,
@@ -378,7 +398,7 @@ impl FunctionBuilder {
         destination: BasicBlockId,
         arguments: Vec<ValueId>,
     ) {
-        let call_stack = self.call_stack.clone();
+        let call_stack = self.call_stack;
         self.terminate_block_with(TerminatorInstruction::Jmp {
             destination,
             arguments,
@@ -394,7 +414,7 @@ impl FunctionBuilder {
         then_destination: BasicBlockId,
         else_destination: BasicBlockId,
     ) {
-        let call_stack = self.call_stack.clone();
+        let call_stack = self.call_stack;
         self.terminate_block_with(TerminatorInstruction::JmpIf {
             condition,
             then_destination,
@@ -405,7 +425,7 @@ impl FunctionBuilder {
 
     /// Terminate the current block with a return instruction
     pub(crate) fn terminate_with_return(&mut self, return_values: Vec<ValueId>) {
-        let call_stack = self.call_stack.clone();
+        let call_stack = self.call_stack;
         self.terminate_block_with(TerminatorInstruction::Return { return_values, call_stack });
     }
 
@@ -463,29 +483,33 @@ impl FunctionBuilder {
     ///
     /// Returns whether a reference count instruction was issued.
     fn update_array_reference_count(&mut self, value: ValueId, increment: bool) -> bool {
-        match self.type_of_value(value) {
-            Type::Numeric(_) => false,
-            Type::Function => false,
-            Type::Reference(element) => {
-                if element.contains_an_array() {
-                    let reference = value;
-                    let value = self.insert_load(reference, element.as_ref().clone());
-                    self.update_array_reference_count(value, increment);
+        if self.current_function.runtime().is_brillig() {
+            match self.type_of_value(value) {
+                Type::Numeric(_) => false,
+                Type::Function => false,
+                Type::Reference(element) => {
+                    if element.contains_an_array() {
+                        let reference = value;
+                        let value = self.insert_load(reference, element.as_ref().clone());
+                        self.update_array_reference_count(value, increment);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Type::Array(..) | Type::Slice(..) => {
+                    // If there are nested arrays or slices, we wait until ArrayGet
+                    // is issued to increment the count of that array.
+                    if increment {
+                        self.insert_inc_rc(value);
+                    } else {
+                        self.insert_dec_rc(value);
+                    }
                     true
-                } else {
-                    false
                 }
             }
-            Type::Array(..) | Type::Slice(..) => {
-                // If there are nested arrays or slices, we wait until ArrayGet
-                // is issued to increment the count of that array.
-                if increment {
-                    self.insert_inc_rc(value);
-                } else {
-                    self.insert_dec_rc(value);
-                }
-                true
-            }
+        } else {
+            false
         }
     }
 

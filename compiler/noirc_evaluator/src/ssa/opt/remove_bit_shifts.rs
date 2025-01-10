@@ -5,8 +5,9 @@ use acvm::{acir::AcirField, FieldElement};
 use crate::ssa::{
     ir::{
         basic_block::BasicBlockId,
-        dfg::{CallStack, InsertInstructionResult},
-        function::{Function, RuntimeType},
+        call_stack::CallStackId,
+        dfg::InsertInstructionResult,
+        function::Function,
         instruction::{Binary, BinaryOp, Endian, Instruction, InstructionId, Intrinsic},
         types::{NumericType, Type},
         value::ValueId,
@@ -31,7 +32,7 @@ impl Function {
     /// The structure of this pass is simple:
     /// Go through each block and re-insert all instructions.
     pub(crate) fn remove_bit_shifts(&mut self) {
-        if matches!(self.runtime(), RuntimeType::Brillig(_)) {
+        if self.runtime().is_brillig() {
             return;
         }
 
@@ -40,7 +41,7 @@ impl Function {
             function: self,
             new_instructions: Vec::new(),
             block,
-            call_stack: CallStack::default(),
+            call_stack: CallStackId::root(),
         };
 
         context.remove_bit_shifts();
@@ -52,7 +53,7 @@ struct Context<'f> {
     new_instructions: Vec<InstructionId>,
 
     block: BasicBlockId,
-    call_stack: CallStack,
+    call_stack: CallStackId,
 }
 
 impl Context<'_> {
@@ -64,7 +65,8 @@ impl Context<'_> {
                 Instruction::Binary(Binary { lhs, rhs, operator })
                     if matches!(operator, BinaryOp::Shl | BinaryOp::Shr) =>
                 {
-                    self.call_stack = self.function.dfg.get_call_stack(instruction_id).clone();
+                    self.call_stack =
+                        self.function.dfg.get_instruction_call_stack_id(instruction_id);
                     let old_result =
                         *self.function.dfg.instruction_results(instruction_id).first().unwrap();
 
@@ -118,17 +120,18 @@ impl Context<'_> {
             let pow = self.numeric_constant(FieldElement::from(rhs_bit_size_pow_2), typ);
 
             let max_lhs_bits = self.function.dfg.get_value_max_num_bits(lhs);
-
-            (max_lhs_bits + bit_shift_size, pow)
+            let max_bit_size = max_lhs_bits + bit_shift_size;
+            // There is no point trying to truncate to more than the Field size.
+            // A higher `max_lhs_bits` input can come from trying to left-shift a Field.
+            let max_bit_size = max_bit_size.min(NumericType::NativeField.bit_size());
+            (max_bit_size, pow)
         } else {
             // we use a predicate to nullify the result in case of overflow
             let u8_type = NumericType::unsigned(8);
             let bit_size_var = self.numeric_constant(FieldElement::from(bit_size as u128), u8_type);
             let overflow = self.insert_binary(rhs, BinaryOp::Lt, bit_size_var);
             let predicate = self.insert_cast(overflow, typ);
-            // we can safely cast to unsigned because overflow_checks prevent bit-shift with a negative value
-            let rhs_unsigned = self.insert_cast(rhs, NumericType::unsigned(bit_size));
-            let pow = self.pow(base, rhs_unsigned);
+            let pow = self.pow(base, rhs);
             let pow = self.insert_cast(pow, typ);
             (FieldElement::max_num_bits(), self.insert_binary(predicate, BinaryOp::Mul, pow))
         };
@@ -295,7 +298,7 @@ impl Context<'_> {
             instruction,
             self.block,
             ctrl_typevars,
-            self.call_stack.clone(),
+            self.call_stack,
         );
 
         if let InsertInstructionResult::Results(instruction_id, _) = result {
