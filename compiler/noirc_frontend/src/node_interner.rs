@@ -134,7 +134,7 @@ pub struct NodeInterner {
     // The purpose for this hashmap is to detect duplication of trait implementations ( if any )
     //
     // Indexed by TraitImplIds
-    pub(crate) trait_implementations: HashMap<TraitImplId, Shared<TraitImpl>>,
+    pub trait_implementations: HashMap<TraitImplId, Shared<TraitImpl>>,
 
     next_trait_implementation_id: usize,
 
